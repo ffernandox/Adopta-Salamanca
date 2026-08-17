@@ -1,8 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
-import { Shield, Key, Smartphone, Laptop, LogOut, CheckCircle2, AlertCircle, Edit2, X } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Shield, Key, Laptop, CheckCircle2, AlertCircle, Edit2, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
 //Input de seguridad 
 interface SecurityInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
@@ -26,23 +28,56 @@ const SecurityInput = ({ label, error, disabled, ...props }: SecurityInputProps)
 );
 
 export default function SecurityPage() {
+  const router = useRouter();
+
   // Estados Generales
   const [is2FAEnabled, setIs2FAEnabled] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  
-  const CURRENT_EMAIL = "vincbrooks32@email.com";
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [saveSuccess, setSaveSuccess] = useState("");
+  const [signingOutAll, setSigningOutAll] = useState(false);
+  const [currentEmail, setCurrentEmail] = useState("");
+  const [sessionInfo, setSessionInfo] = useState({ browser: "Este dispositivo", lastActive: "Ahora" });
 
   const [formData, setFormData] = useState({
-    email: CURRENT_EMAIL,
+    email: "",
     currentPassword: "",
     newPassword: "",
-    phone: "5212345678",
+    phone: "",
     securityQuestion: ""
   });
 
-  // Estados del Modal de Verificación de Correo
-  const [showEmailVerification, setShowEmailVerification] = useState(false);
-  const [verificationCode, setVerificationCode] = useState("");
+  // ── Cargar correo real y teléfono real desde Supabase ─────
+  useEffect(() => {
+    const loadSecurityData = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.replace("/"); return; }
+
+      const email = session.user.email ?? "";
+      setCurrentEmail(email);
+
+      const { data: perfil } = await supabase
+        .from("perfiles")
+        .select("telefono")
+        .eq("id", session.user.id)
+        .single();
+
+      setFormData(prev => ({ ...prev, email, phone: perfil?.telefono ?? "" }));
+
+      // Info básica de la sesión actual (lo único que el cliente puede leer de sí mismo)
+      const ua = navigator.userAgent;
+      const browser = /Safari/.test(ua) && !/Chrome/.test(ua) ? "Safari"
+        : /Chrome/.test(ua) ? "Chrome"
+        : /Firefox/.test(ua) ? "Firefox" : "Navegador";
+      const os = /Mac/.test(ua) ? "macOS" : /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : "";
+      setSessionInfo({ browser: `${os} ${browser}`.trim(), lastActive: "Ahora" });
+
+      setLoading(false);
+    };
+    loadSecurityData();
+  }, [router]);
 
   //  LÓGICA DE VALIDACIÓN
   
@@ -68,34 +103,71 @@ export default function SecurityPage() {
   };
   const isPasswordValid = !formData.newPassword || (pwdReqs.length && pwdReqs.upper && pwdReqs.lower && pwdReqs.special);
 
-  // Manejo de Guardado
-  const handleSaveCredentials = (e: React.FormEvent) => {
+  // Manejo de Guardado — todo contra Supabase real
+  const handleSaveCredentials = async (e: React.FormEvent) => {
       e.preventDefault();
-      
+      setSaveError(""); setSaveSuccess("");
+
       // 1. Validar que si escribió contraseña nueva, cumpla los requisitos
       if (formData.newPassword && !isPasswordValid) return;
 
-      // 2. Si el correo cambió, interceptamos y pedimos código
-      if (formData.email !== CURRENT_EMAIL) {
-          setShowEmailVerification(true);
+      // 2. Si quiere cambiar contraseña o correo, primero confirmamos su contraseña actual
+      const wantsEmailChange = formData.email !== currentEmail;
+      const wantsPasswordChange = !!formData.newPassword;
+
+      if ((wantsEmailChange || wantsPasswordChange) && !formData.currentPassword) {
+          setSaveError("Ingresa tu contraseña actual para confirmar los cambios.");
           return;
       }
 
-      // 3. Si todo está bien y no cambió correo, guardamos en DB
-      submitToDatabase();
-  };
+      setSaving(true);
+      try {
+        if (wantsEmailChange || wantsPasswordChange) {
+          // Reautenticamos con la contraseña actual antes de cambiar credenciales sensibles
+          const { error: reauthError } = await supabase.auth.signInWithPassword({
+            email: currentEmail,
+            password: formData.currentPassword,
+          });
+          if (reauthError) {
+            setSaveError("Tu contraseña actual es incorrecta.");
+            setSaving(false);
+            return;
+          }
+        }
 
-  const submitToDatabase = () => {
-      // Aquí iría tu fetch/axios a tu API
-      console.log("Guardando datos en DB:", formData);
-      setShowEmailVerification(false);
-      setIsEditing(false);
-      setFormData({ ...formData, currentPassword: "", newPassword: "" }); // Limpiar contraseñas tras guardar
-      alert("Credenciales actualizadas correctamente.");
+        if (wantsPasswordChange) {
+          const { error } = await supabase.auth.updateUser({ password: formData.newPassword });
+          if (error) { setSaveError(error.message); setSaving(false); return; }
+        }
+
+        if (wantsEmailChange) {
+          const { error } = await supabase.auth.updateUser({ email: formData.email });
+          if (error) { setSaveError(error.message); setSaving(false); return; }
+          setSaveSuccess("Te enviamos un enlace de confirmación a tu correo nuevo. Tu correo de inicio de sesión cambiará hasta que lo confirmes.");
+        }
+
+        // Teléfono: se guarda directo en la tabla perfiles
+        const { error: perfilError } = await supabase
+          .from("perfiles")
+          .update({ telefono: formData.phone || null })
+          .eq("id", (await supabase.auth.getUser()).data.user?.id);
+        if (perfilError) { setSaveError(perfilError.message); setSaving(false); return; }
+
+        if (!wantsEmailChange) setSaveSuccess("Credenciales actualizadas correctamente.");
+        setIsEditing(false);
+        setFormData(prev => ({ ...prev, currentPassword: "", newPassword: "" }));
+      } finally {
+        setSaving(false);
+      }
   };
 
   return (
     <div className="animate-in fade-in duration-500 max-w-5xl mx-auto relative">
+      {loading && (
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-400 mb-6">
+          <Loader2 size={16} className="animate-spin" /> Cargando tu información de seguridad...
+        </div>
+      )}
       
       <div className="mb-10">
         <h2 className="text-2xl font-black text-slate-800 mb-2">Seguridad de la Cuenta</h2>
@@ -199,13 +271,21 @@ export default function SecurityPage() {
               />
             </div>
 
+            {(saveError || saveSuccess) && (
+                <div className={`text-xs font-bold px-4 py-3 rounded-xl flex items-center gap-2 ${saveError ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
+                    {saveError ? <AlertCircle size={14} /> : <CheckCircle2 size={14} />}
+                    {saveError || saveSuccess}
+                </div>
+            )}
+
             {isEditing && (
                 <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="pt-4 flex justify-end gap-3 border-t border-slate-100">
                    <button 
                      type="button"
                      onClick={() => {
                          setIsEditing(false);
-                         setFormData({ ...formData, email: CURRENT_EMAIL, currentPassword: "", newPassword: "" }); // Reset
+                         setFormData(prev => ({ ...prev, email: currentEmail, currentPassword: "", newPassword: "" })); // Reset
+                         setSaveError(""); setSaveSuccess("");
                      }}
                      className="px-6 py-3 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition"
                    >
@@ -213,9 +293,10 @@ export default function SecurityPage() {
                    </button>
                    <button 
                      type="submit"
-                     disabled={!isPasswordValid || formData.phone.length > 0 && formData.phone.length < 10}
-                     className="bg-slate-900 text-white px-8 py-3 rounded-xl text-sm font-black hover:bg-slate-800 transition shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                     disabled={saving || !isPasswordValid || (formData.phone.length > 0 && formData.phone.length < 10)}
+                     className="bg-slate-900 text-white px-8 py-3 rounded-xl text-sm font-black hover:bg-slate-800 transition shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                    >
+                     {saving && <Loader2 size={14} className="animate-spin" />}
                      Guardar Cambios
                    </button>
                 </motion.div>
@@ -246,18 +327,20 @@ export default function SecurityPage() {
                         {is2FAEnabled ? <CheckCircle2 size={20} /> : <Shield size={20} />}
                     </div>
                     <div>
-                        <h4 className="font-bold text-slate-800">Autenticación en dos pasos (2FA)</h4>
+                        <h4 className="font-bold text-slate-800 flex items-center gap-2">
+                          Autenticación en dos pasos (2FA)
+                          <span className="text-[9px] font-black uppercase tracking-wider bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">Próximamente</span>
+                        </h4>
                         <p className="text-xs text-slate-500 font-medium mt-1 max-w-sm">
-                            {is2FAEnabled 
-                                ? "La autenticación en dos pasos está activa. Tu cuenta está protegida." 
-                                : "Te pediremos un código cuando inicies sesión en un dispositivo nuevo."}
+                            Esta función todavía no está conectada — actívala solo cuando el flujo de verificación esté implementado en el backend.
                         </p>
                     </div>
                 </div>
 
                 <button 
+                  disabled
                   onClick={() => setIs2FAEnabled(!is2FAEnabled)}
-                  className={`relative w-14 h-8 rounded-full transition-colors duration-300 focus:outline-none shrink-0 shadow-inner
+                  className={`relative w-14 h-8 rounded-full transition-colors duration-300 focus:outline-none shrink-0 shadow-inner opacity-40 cursor-not-allowed
                     ${is2FAEnabled ? 'bg-[#E83C7E]' : 'bg-slate-200'}
                   `}
                 >
@@ -279,13 +362,22 @@ export default function SecurityPage() {
               Sesiones Activas
             </h3>
             <p className="text-xs font-medium text-slate-500 leading-relaxed">
-              Revisa los dispositivos que han iniciado sesión en tu cuenta. Revoca el acceso a cualquier dispositivo que no reconozcas.
+              Por seguridad, Supabase no permite ver el listado de dispositivos desde el navegador — pero sí puedes cerrar todas tus sesiones activas (en todos los dispositivos) desde aquí.
             </p>
           </div>
           
           <div className="md:col-span-2">
             <div className="flex items-center justify-end mb-4">
-                <button className="text-xs font-bold text-[#E83C7E] hover:text-[#c92a65] transition">
+                <button
+                  onClick={async () => {
+                    setSigningOutAll(true);
+                    await supabase.auth.signOut({ scope: 'global' });
+                    router.replace("/");
+                  }}
+                  disabled={signingOutAll}
+                  className="text-xs font-bold text-[#E83C7E] hover:text-[#c92a65] transition disabled:opacity-50 flex items-center gap-1.5"
+                >
+                    {signingOutAll && <Loader2 size={12} className="animate-spin" />}
                     Cerrar todas las sesiones
                 </button>
             </div>
@@ -298,71 +390,17 @@ export default function SecurityPage() {
                         </div>
                         <div>
                             <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                                Mac OS Safari <span className="bg-emerald-100 text-emerald-700 text-[9px] uppercase px-2 py-0.5 rounded-md">Sesión Actual</span>
+                                {sessionInfo.browser} <span className="bg-emerald-100 text-emerald-700 text-[9px] uppercase px-2 py-0.5 rounded-md">Sesión Actual</span>
                             </h4>
-                            <p className="text-xs text-slate-500 font-medium">Salamanca, Gto. • Hace 2 min</p>
+                            <p className="text-xs text-slate-500 font-medium">{sessionInfo.lastActive}</p>
                         </div>
                     </div>
-                </div>
-
-                <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-2xl group hover:border-slate-200 transition-colors">
-                    <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-white text-slate-400 rounded-xl flex items-center justify-center shadow-sm">
-                            <Smartphone size={20} />
-                        </div>
-                        <div>
-                            <h4 className="text-sm font-bold text-slate-800">iPhone 14 Pro</h4>
-                            <p className="text-xs text-slate-500 font-medium">Irapuato, Gto. • Hace 3 días</p>
-                        </div>
-                    </div>
-                    <button className="text-slate-400 hover:text-red-500 transition-colors p-2 bg-white rounded-lg opacity-0 group-hover:opacity-100 shadow-sm border border-slate-100">
-                        <LogOut size={16} />
-                    </button>
                 </div>
             </div>
           </div>
         </section>
 
       </div>
-
-      {/* VERIFICACIÓN DE CAMBIO DE CORREO */}
-      <AnimatePresence>
-        {showEmailVerification && (
-            <div className="fixed inset-0 z-[100000] flex items-center justify-center p-4">
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowEmailVerification(false)} className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
-                <motion.div initial={{ scale: 0.9, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.9, opacity: 0, y: 20 }} className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl z-[100001] relative border border-slate-100 text-center">
-                    
-                    <button onClick={() => setShowEmailVerification(false)} className="absolute right-6 top-6 text-slate-400 hover:text-slate-600 bg-slate-50 p-2 rounded-full transition"><X size={16} strokeWidth={3}/></button>
-                    
-                    <div className="w-16 h-16 bg-[#E83C7E]/10 rounded-2xl flex items-center justify-center text-[#E83C7E] mx-auto mb-6 shadow-inner"><Shield size={32} strokeWidth={2.5} /></div>
-                    
-                    <h3 className="text-2xl font-black text-slate-800 mb-2 tracking-tighter">Código de Seguridad</h3>
-                    <p className="text-slate-500 font-medium mb-6 leading-relaxed text-sm">
-                      Para cambiar tu correo a <span className="font-bold text-slate-800">{formData.email}</span>, ingresa el código de 6 dígitos que enviamos a tu correo actual ({CURRENT_EMAIL}).
-                    </p>
-                    
-                    <input 
-                      type="text" 
-                      maxLength={6}
-                      placeholder="000000"
-                      value={verificationCode}
-                      onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
-                      className="w-full text-center text-3xl font-black tracking-[0.5em] bg-slate-50 border border-slate-200 rounded-2xl py-4 focus:outline-none focus:border-[#E83C7E] focus:ring-2 focus:ring-[#E83C7E]/20 transition-all mb-6"
-                    />
-
-                    <button 
-                      onClick={submitToDatabase}
-                      disabled={verificationCode.length !== 6}
-                      className="w-full py-4 rounded-xl bg-[#E83C7E] text-white font-black hover:bg-[#D43372] transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-[#E83C7E]/30"
-                    >
-                      Verificar y Guardar
-                    </button>
-                    
-                    <button className="mt-4 text-xs font-bold text-slate-400 hover:text-slate-600 transition">¿No recibiste el código? Reenviar</button>
-                </motion.div>
-            </div>
-        )}
-      </AnimatePresence>
 
     </div>
   );

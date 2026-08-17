@@ -38,7 +38,7 @@ export default function ProfileLayout({ children }: { children: React.ReactNode 
           ? `${perfil.nombre}${perfil.apellido ? " " + perfil.apellido : ""}`
           : session.user.email?.split("@")[0] ?? "Usuario",
         email: session.user.email ?? "",
-        avatar: perfil?.avatar_url ?? `https://i.pravatar.cc/150?u=${session.user.id}`,
+        avatar: perfil?.avatar_url ?? "",
       });
     };
     loadUser();
@@ -74,12 +74,21 @@ export default function ProfileLayout({ children }: { children: React.ReactNode 
       <aside className="w-[280px] md:w-[320px] flex flex-col px-6 py-8 shrink-0">
 
         <div className="flex items-center gap-3 mb-8 px-2">
-          <div className="w-12 h-12 rounded-full overflow-hidden shadow-sm border-2 border-white shrink-0">
-            <img
-              src={currentUser.avatar}
-              alt="Perfil"
-              className="w-full h-full object-cover"
-            />
+          <div className="w-12 h-12 rounded-full overflow-hidden shadow-sm border-2 border-white shrink-0 bg-slate-200">
+            {currentUser.avatar ? (
+              <img
+                src={currentUser.avatar}
+                alt="Perfil"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7 text-slate-400">
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 20c0-4.418 3.582-7 8-7s8 2.582 8 7v1H4v-1z" />
+                </svg>
+              </div>
+            )}
           </div>
           <div className="overflow-hidden flex-1">
             <p className="text-xs text-slate-500 font-medium">Bienvenido,</p>

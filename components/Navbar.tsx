@@ -10,7 +10,15 @@ import { useRouter } from "next/navigation";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 
 // Foto genérica de perro (se usa si el usuario no ha subido foto)
-const DEFAULT_AVATAR = "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=150&h=150&fit=crop&crop=face";
+// Ícono genérico mostrado cuando el usuario no tiene foto de perfil
+const GenericAvatarIcon = ({ className = "" }: { className?: string }) => (
+  <div className={`w-full h-full flex items-center justify-center bg-slate-200 ${className}`}>
+    <svg viewBox="0 0 24 24" fill="currentColor" className="w-1/2 h-1/2 text-slate-400">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20c0-4.418 3.582-7 8-7s8 2.582 8 7v1H4v-1z" />
+    </svg>
+  </div>
+);
 
 interface Perfil {
   nombre: string | null;
@@ -86,7 +94,7 @@ export default function Navbar() {
     ? `${perfil.nombre}${perfil.apellido ? " " + perfil.apellido : ""}`
     : user?.email?.split("@")[0] ?? "Usuario";
 
-  const avatarUrl = perfil?.avatar_url || DEFAULT_AVATAR;
+  const avatarUrl = perfil?.avatar_url || "";
 
   return (
     <>
@@ -142,8 +150,12 @@ export default function Navbar() {
               >
                 {/* Avatar */}
                 <div className="w-8 h-8 rounded-full overflow-hidden ring-2 ring-[#7DD64C] shrink-0">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                  {avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                  ) : (
+                    <GenericAvatarIcon />
+                  )}
                 </div>
                 {/* Nombre */}
                 <span className="text-sm font-bold text-[#2D2A26] max-w-[120px] truncate">
@@ -163,8 +175,12 @@ export default function Navbar() {
                   <div className="px-5 py-4 flex items-center gap-3 border-b border-gray-100">
                     <div className="relative shrink-0">
                       <div className="w-14 h-14 rounded-full overflow-hidden">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                        {avatarUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                        ) : (
+                          <GenericAvatarIcon />
+                        )}
                       </div>
                       {/* Punto verde online */}
                       <span className="absolute bottom-0.5 right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-white" />

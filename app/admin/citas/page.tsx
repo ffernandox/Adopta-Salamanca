@@ -9,9 +9,12 @@ import {
 } from "lucide-react";
 
 import AppointmentDetailPanel from "@/components/AppointmentDetailPanel";
+import { supabase } from "@/lib/supabase";
 
 // =========================================================================
 // SIMULACIÓN DE SESIÓN Y USUARIO LOGUEADO
+// Pendiente: cuando la tabla "perfiles" tenga un campo de albergue/centro,
+// sustituir esto por el valor real del admin logueado.
 // =========================================================================
 const LOGGED_IN_SHELTER = "Refugio Esperanza"; 
 
@@ -31,7 +34,7 @@ const today = new Date();
 const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
 export interface Appointment {
-  id: number;
+  id: string;
   date: string; 
   time: string;
   duration: string;
@@ -46,11 +49,37 @@ export interface Appointment {
   status?: 'Pendiente' | 'Completado'; 
 }
 
-const INITIAL_APPOINTMENTS: Appointment[] = [
-  { id: 1, date: todayStr, time: "10:00", duration: "1h 30min", title: "Entrevista de Adopción", pet: "Bucky", shelter: "Refugio Esperanza", adopter: "Fernando López", phone: "5550192834", notes: "Llegará con toda su familia.", type: "Entrevista", color: "bg-indigo-500", status: "Pendiente" },
-  { id: 2, date: todayStr, time: "13:30", duration: "1h", title: "Entrega de Mascota", pet: "Luna", shelter: "Refugio Esperanza", adopter: "Ana García", phone: "5559821102", notes: "No olvidar entregar la cartilla de vacunación.", type: "Entrega", color: "bg-emerald-500", status: "Pendiente" },
-  { id: 3, date: todayStr, time: "15:00", duration: "45min", title: "Revisión Veterinaria", pet: "Rocky", shelter: "Huellitas de Amor", adopter: "Albergue Staff", phone: "", notes: "", type: "Salud", color: "bg-amber-500", status: "Pendiente" }
-];
+// Forma de una fila tal como la devuelve Supabase (tabla "citas")
+interface CitaRow {
+  id: string;
+  fecha: string;
+  hora: string;
+  duracion: string;
+  tipo: string;
+  centro: string;
+  mascota_nombre: string;
+  adoptante: string;
+  telefono: string | null;
+  notas: string | null;
+  estado: 'Pendiente' | 'Completado';
+}
+
+// Mapea una fila de la tabla "citas" (Supabase) a la forma que usa la UI
+const mapRowToAppointment = (row: CitaRow): Appointment => ({
+  id: row.id,
+  date: row.fecha,
+  time: row.hora,
+  duration: row.duracion,
+  title: row.tipo === "Entrega" ? "Entrega de Mascota" : row.tipo === "Salud" ? "Revisión Veterinaria" : "Entrevista de Adopción",
+  pet: row.mascota_nombre,
+  shelter: row.centro,
+  adopter: row.adoptante,
+  phone: row.telefono || "",
+  notes: row.notas || "",
+  type: row.tipo,
+  color: row.tipo === "Entrega" ? "bg-emerald-500" : row.tipo === "Salud" ? "bg-amber-500" : "bg-indigo-500",
+  status: row.estado,
+});
 
 // =========================================================================
 // COMPONENTE: SELECTOR UNIVERSAL ANIMADO 
@@ -106,9 +135,32 @@ const CustomPicker = ({ icon: Icon, value, options, onChange, placeholder = "Sel
 // PÁGINA PRINCIPAL: CITAS 
 // =========================================================================
 export default function CitasPage() {
-  const [appointments, setAppointments] = useState<Appointment[]>(INITIAL_APPOINTMENTS);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(true);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [overlapError, setOverlapError] = useState("");
+
+  // ── Cargar citas desde Supabase (tiempo real) ─────────────
+  useEffect(() => {
+    const fetchAppointments = async () => {
+      setLoadingAppointments(true);
+      const { data, error } = await supabase
+        .from("citas")
+        .select("*")
+        .order("fecha", { ascending: true })
+        .order("hora", { ascending: true });
+      if (!error && data) setAppointments(data.map(mapRowToAppointment));
+      setLoadingAppointments(false);
+    };
+    fetchAppointments();
+
+    const channel = supabase
+      .channel("citas_live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "citas" }, fetchAppointments)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
   
   const [currentWeekView, setCurrentWeekView] = useState<Date>(() => {
     const d = new Date();
@@ -121,7 +173,7 @@ export default function CitasPage() {
   const [appToDelete, setAppToDelete] = useState<Appointment | null>(null);
   const [showFormModal, setShowFormModal] = useState(false);
   const [showUnsavedModal, setShowUnsavedModal] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({ shelter: LOGGED_IN_SHELTER || "", pet: "", adopter: "", phone: "", notes: "", time: "10:00", duration: "1h", type: "Entrevista" });
   const [initialFormData, setInitialFormData] = useState({ shelter: LOGGED_IN_SHELTER || "", pet: "", adopter: "", phone: "", notes: "", time: "10:00", duration: "1h", type: "Entrevista" });
@@ -213,10 +265,13 @@ export default function CitasPage() {
   // =========================================================================
   // LÓGICA DE MODALES
   // =========================================================================
-  const handleDeleteCita = () => {
+  const handleDeleteCita = async () => {
     if (appToDelete) {
-      setAppointments(prev => prev.filter(app => app.id !== appToDelete.id));
-      setSelectedApp(null); setAppToDelete(null); 
+      const { error } = await supabase.from("citas").delete().eq("id", appToDelete.id);
+      if (!error) {
+        setAppointments(prev => prev.filter(app => app.id !== appToDelete.id));
+      }
+      setSelectedApp(null); setAppToDelete(null);
     }
   };
 
@@ -240,7 +295,7 @@ export default function CitasPage() {
     setFormData(prev => ({ ...prev, shelter: newShelter, pet: "" }));
   };
 
-  const handleSubmitForm = (e: React.FormEvent) => {
+  const handleSubmitForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.shelter || !formData.pet || formData.phone.length < 10) return;
 
@@ -264,15 +319,28 @@ export default function CitasPage() {
       return;
     }
 
-    const color = formData.type === "Entrega" ? "bg-emerald-500" : formData.type === "Salud" ? "bg-amber-500" : "bg-indigo-500";
-    const title = formData.type === "Entrega" ? "Entrega de Mascota" : formData.type === "Salud" ? "Revisión Veterinaria" : "Entrevista de Adopción";
+    const payload = {
+      fecha: formattedSelectedDate,
+      hora: formData.time,
+      duracion: formData.duration,
+      tipo: formData.type,
+      centro: formData.shelter,
+      mascota_nombre: formData.pet,
+      adoptante: formData.adopter,
+      telefono: formData.phone,
+      notas: formData.notes,
+      estado: "Pendiente",
+    };
 
     if (editingId) {
-      setAppointments(prev => prev.map(app => app.id === editingId ? { ...app, ...formData, color, title, date: formattedSelectedDate } : app));
+      const { error } = await supabase.from("citas").update(payload).eq("id", editingId);
+      if (error) { setOverlapError("No se pudo actualizar la cita: " + error.message); return; }
     } else {
-      setAppointments(prev => [...prev, { id: Date.now(), date: formattedSelectedDate, time: formData.time, duration: formData.duration, title, pet: formData.pet, shelter: formData.shelter, adopter: formData.adopter, phone: formData.phone, notes: formData.notes, type: formData.type, color, status: "Pendiente" }]);
+      const { error } = await supabase.from("citas").insert(payload);
+      if (error) { setOverlapError("No se pudo guardar la cita: " + error.message); return; }
     }
-    
+
+    // El listado se refresca solo por la suscripción en tiempo real (postgres_changes)
     setOverlapError("");
     setShowFormModal(false);
   };

@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { 
   LayoutDashboard, FileText, PawPrint, Calendar, 
   Users, Settings, LogOut, Bell, Search, 
@@ -10,6 +10,18 @@ import {
   User, Moon, X, Sun
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { supabase } from "@/lib/supabase";
+
+// Convierte una fecha a un texto relativo corto: "5m", "2h", "3d"
+function timeAgo(dateStr: string) {
+  const diffMs = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "ahora";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
 
 export default function AdminLayout({
   children,
@@ -17,6 +29,7 @@ export default function AdminLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   
   const [showNotifications, setShowNotifications] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'unread'>('all');
@@ -27,12 +40,36 @@ export default function AdminLayout({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // SIMULACION DE SESION DE BACKEND
-  const currentUser = {
-    name: "Carlos Ruiz",
-    email: "carlos@refugio.com",
-    role: "Administrador", 
-    avatar: "https://i.pravatar.cc/150?img=11"
+  // ── Usuario admin real (sesión + tabla perfiles) ──────────
+  const [currentUser, setCurrentUser] = useState({
+    name: "Cargando...",
+    email: "",
+    role: "Administrador",
+    avatar: "https://i.pravatar.cc/150?img=11",
+  });
+
+  useEffect(() => {
+    const loadCurrentUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data: perfil } = await supabase
+        .from("perfiles")
+        .select("nombre, apellido, avatar_url, rol")
+        .eq("id", user.id)
+        .single();
+      setCurrentUser({
+        name: perfil ? `${perfil.nombre ?? ""} ${perfil.apellido ?? ""}`.trim() || "Administrador" : "Administrador",
+        email: user.email ?? "",
+        role: perfil?.rol === "admin" ? "Administrador" : "Voluntario",
+        avatar: perfil?.avatar_url || "https://i.pravatar.cc/150?img=11",
+      });
+    };
+    loadCurrentUser();
+  }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push("/website");
   };
 
   const getRoleBadgeStyle = (role: string) => {
@@ -59,18 +96,73 @@ export default function AdminLayout({
             item.type.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // SIMULACION DE NOTIFICACIONES
-  const notifications = [
-    { id: 1, user: "Juan Pérez", avatar: "https://i.pravatar.cc/150?img=32", action: "Nueva solicitud", target: "Max", time: "1h ago", type: "comment", unread: true, text: "Revisar comprobante de domicilio." },
-    { id: 2, user: "Dra. Martínez", avatar: "https://i.pravatar.cc/150?img=44", action: "Actualizó expediente", target: "Luna", time: "1h ago", type: "file", unread: true, text: "Vacunas completadas." },
-    { id: 3, user: "Admin", avatar: "https://i.pravatar.cc/150?img=5", action: "Reunión", target: "Sede Norte", time: "2h ago", type: "invite", unread: true, hasActions: true },
-    { id: 4, user: "Laura M.", avatar: "https://i.pravatar.cc/150?img=9", action: "Adopción de", target: "Rocky", time: "3h ago", type: "like", unread: false }
-  ];
+  // ── Notificaciones reales desde Supabase (tiempo real) ────
+  interface NotificacionRow {
+    id: string;
+    usuario: string;
+    avatar_url: string | null;
+    accion: string;
+    objetivo: string | null;
+    tipo: string;
+    mensaje: string | null;
+    leida: boolean;
+    creado_en: string;
+  }
+  interface NotificacionUI {
+    id: string;
+    user: string;
+    avatar: string;
+    action: string;
+    target: string | null;
+    time: string;
+    type: string;
+    unread: boolean;
+    text: string | null;
+  }
+
+  const [notifications, setNotifications] = useState<NotificacionUI[]>([]);
+
+  useEffect(() => {
+    const mapRow = (row: NotificacionRow): NotificacionUI => ({
+      id: row.id,
+      user: row.usuario,
+      avatar: row.avatar_url || "https://i.pravatar.cc/150?img=1",
+      action: row.accion,
+      target: row.objetivo,
+      time: timeAgo(row.creado_en),
+      type: row.tipo,
+      unread: !row.leida,
+      text: row.mensaje,
+    });
+
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from("notificaciones")
+        .select("*")
+        .order("creado_en", { ascending: false })
+        .limit(30);
+      if (!error && data) setNotifications(data.map(mapRow));
+    };
+    fetchNotifications();
+
+    const channel = supabase
+      .channel("notificaciones_live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "notificaciones" }, fetchNotifications)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   const filteredNotifications = notifications.filter(n => {
       if (activeFilter === 'unread') return n.unread === true;
       return true;
   });
+
+  const markNotificationsRead = async () => {
+    const unreadIds = notifications.filter(n => n.unread).map(n => n.id);
+    if (unreadIds.length === 0) return;
+    await supabase.from("notificaciones").update({ leida: true }).in("id", unreadIds);
+  };
 
   const menuItems = [
     { icon: LayoutDashboard, route: "/admin", label: "Inicio" },
@@ -82,7 +174,11 @@ export default function AdminLayout({
   ];
 
   const openSearch = () => { setIsSearchOpen(true); setShowNotifications(false); setShowProfileMenu(false); };
-  const openNotifs = () => { setShowNotifications(!showNotifications); setIsSearchOpen(false); setShowProfileMenu(false); };
+  const openNotifs = () => {
+    const opening = !showNotifications;
+    setShowNotifications(opening); setIsSearchOpen(false); setShowProfileMenu(false);
+    if (opening) markNotificationsRead();
+  };
   const openProfile = () => { setShowProfileMenu(!showProfileMenu); setIsSearchOpen(false); setShowNotifications(false); };
 
   return (
@@ -135,7 +231,7 @@ export default function AdminLayout({
           })}
         </nav>
         
-        <button className={`h-12 flex items-center rounded-2xl transition-all duration-300 overflow-hidden text-slate-400 hover:bg-red-500/10 hover:text-red-400 ${isSidebarExpanded ? 'px-4 justify-start w-full' : 'justify-center w-12 mx-auto'}`}>
+        <button onClick={handleLogout} className={`h-12 flex items-center rounded-2xl transition-all duration-300 overflow-hidden text-slate-400 hover:bg-red-500/10 hover:text-red-400 ${isSidebarExpanded ? 'px-4 justify-start w-full' : 'justify-center w-12 mx-auto'}`}>
           <LogOut size={20} className="shrink-0" />
           <AnimatePresence>
             {isSidebarExpanded && (
@@ -294,12 +390,6 @@ export default function AdminLayout({
                                                         <p className="text-sm text-slate-300"><span className="font-bold text-white">{notif.user}</span> <span className="text-slate-500 text-xs ml-1">{notif.time}</span></p>
                                                         <p className="text-sm text-slate-400 mt-0.5 leading-snug">{notif.action} <span className="font-bold text-indigo-400">{notif.target}</span></p>
                                                         {notif.text && <p className="text-xs text-slate-500 mt-2 line-clamp-2 leading-relaxed bg-slate-800/50 p-2.5 rounded-lg border border-slate-700/50">{notif.text}</p>}
-                                                        {notif.hasActions && (
-                                                            <div className="flex gap-2 mt-3">
-                                                                <button className="flex-1 py-1.5 rounded-xl border border-slate-600 bg-slate-800 text-xs font-bold text-slate-300 hover:text-white hover:bg-slate-700 transition shadow-sm">Rechazar</button>
-                                                                <button className="flex-1 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-500 transition shadow-lg shadow-indigo-900/50">Aceptar</button>
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </div>
                                             </div>
@@ -377,10 +467,10 @@ export default function AdminLayout({
 
                             <div className="h-[1px] bg-slate-800/80 my-1 mx-2" />
 
-                            <Link href="/website" className="flex items-center gap-3 p-3 hover:bg-red-500/10 rounded-2xl cursor-pointer transition-colors text-slate-400 hover:text-red-400 font-medium text-sm group">
+                            <button onClick={handleLogout} className="w-full flex items-center gap-3 p-3 hover:bg-red-500/10 rounded-2xl cursor-pointer transition-colors text-slate-400 hover:text-red-400 font-medium text-sm group">
                               <LogOut size={18} className="text-slate-500 group-hover:text-red-400 transition-colors" />
                               Cerrar sesión
-                            </Link>
+                            </button>
                           </div>
                         </motion.div>
                       </>

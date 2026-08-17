@@ -1,32 +1,66 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { ArrowUpRight, Calendar, MoreHorizontal, PlayCircle } from "lucide-react";
 import Link from "next/link";
 import { ScatterChart } from '@mui/x-charts/ScatterChart';
+import { supabase } from "@/lib/supabase";
 
-// Eje X = Edad de la mascota (meses)
-// Eje Y = Tiempo en el refugio antes de adopcion (dias)
-const dbDataPerros = [
-  { id: 'p1', x: 2, y: 15 }, { id: 'p2', x: 6, y: 25 }, { id: 'p3', x: 12, y: 40 },
-  { id: 'p4', x: 24, y: 60 }, { id: 'p5', x: 36, y: 90 }, { id: 'p6', x: 48, y: 120 },
-  { id: 'p7', x: 3, y: 10 }, { id: 'p8', x: 8, y: 30 }, { id: 'p9', x: 18, y: 50 },
-  { id: 'p10', x: 15, y: 45 }, { id: 'p11', x: 28, y: 75 }, { id: 'p12', x: 40, y: 100 },
-];
+type ScatterPoint = { id: string; x: number; y: number };
 
-const dbDataGatos = [
-  { id: 'g1', x: 1, y: 10 }, { id: 'g2', x: 4, y: 20 }, { id: 'g3', x: 8, y: 35 },
-  { id: 'g4', x: 14, y: 45 }, { id: 'g5', x: 20, y: 55 }, { id: 'g6', x: 30, y: 80 },
-  { id: 'g7', x: 2, y: 12 }, { id: 'g8', x: 5, y: 22 }, { id: 'g9', x: 10, y: 30 },
-  { id: 'g10', x: 12, y: 38 }, { id: 'g11', x: 25, y: 65 }, { id: 'g12', x: 35, y: 85 },
-];
+interface MascotaAnalyticsRow {
+  id: string;
+  especie: string | null;
+  edad: number | null;
+  creado_en: string;
+}
 
-const dbDataOtros = [
-  { id: 'o1', x: 5, y: 15 }, { id: 'o2', x: 10, y: 25 }, { id: 'o3', x: 20, y: 40 },
-  { id: 'o4', x: 15, y: 30 }, { id: 'o5', x: 8, y: 20 }, { id: 'o6', x: 30, y: 60 },
-];
+// Días transcurridos desde que la mascota se registró (creado_en) hasta hoy,
+// o hasta que dejó de estar disponible si ya no lo está.
+function diasEnRefugio(creadoEn: string) {
+  const ms = Date.now() - new Date(creadoEn).getTime();
+  return Math.max(0, Math.round(ms / (1000 * 60 * 60 * 24)));
+}
 
 export default function AdminDashboard() {
+  const [dbDataPerros, setDbDataPerros] = useState<ScatterPoint[]>([]);
+  const [dbDataGatos, setDbDataGatos] = useState<ScatterPoint[]>([]);
+  const [dbDataOtros, setDbDataOtros] = useState<ScatterPoint[]>([]);
+
+  useEffect(() => {
+    const fetchAnalytics = async () => {
+      const { data, error } = await supabase
+        .from("mascotas")
+        .select("id, especie, edad, creado_en");
+      if (error || !data) return;
+
+      const perros: ScatterPoint[] = [];
+      const gatos: ScatterPoint[] = [];
+      const otros: ScatterPoint[] = [];
+
+      data.forEach((m: MascotaAnalyticsRow) => {
+        const point = { id: m.id, x: m.edad ?? 0, y: diasEnRefugio(m.creado_en) };
+        const especie = (m.especie || "").toLowerCase();
+        if (especie === "perro") perros.push(point);
+        else if (especie === "gato") gatos.push(point);
+        else otros.push(point);
+      });
+
+      setDbDataPerros(perros);
+      setDbDataGatos(gatos);
+      setDbDataOtros(otros);
+    };
+
+    fetchAnalytics();
+
+    const channel = supabase
+      .channel("mascotas_analytics_live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "mascotas" }, fetchAnalytics)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
   return (
     <div className="w-full max-w-[1600px] mx-auto animate-in fade-in duration-500">
       
@@ -228,8 +262,8 @@ export default function AdminDashboard() {
                         color: '#10b981', 
                       },
                     ]}
-                    xAxis={[{ min: 0, max: 55 }]} 
-                    yAxis={[{ min: 0, max: 130 }]} 
+                    xAxis={[{ min: 0, max: 20 }]} 
+                    yAxis={[{ min: 0, max: 180 }]} 
                     grid={{ horizontal: true, vertical: true }} 
                     margin={{ top: 40, bottom: 20, left: 30, right: 10 }}
                     slotProps={{

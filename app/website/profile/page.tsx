@@ -39,6 +39,8 @@ export default function ProfileInformationPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -49,6 +51,7 @@ export default function ProfileInformationPage() {
     addressSelect2: "Salamanca",
     zipCode: "",
     street: "",
+    avatarUrl: "",
   });
 
   //  Cargar perfil desde Supabase 
@@ -60,7 +63,7 @@ export default function ProfileInformationPage() {
 
       const { data } = await supabase
         .from("perfiles")
-        .select("nombre, apellido, telefono, direccion, ciudad, estado_republica, codigo_postal")
+        .select("nombre, apellido, telefono, direccion, ciudad, estado_republica, codigo_postal, avatar_url")
         .eq("id", session.user.id)
         .single();
 
@@ -73,6 +76,7 @@ export default function ProfileInformationPage() {
         addressSelect2: data?.ciudad             ?? "Salamanca",
         zipCode:        data?.codigo_postal      ?? "",
         street:         data?.direccion          ?? "",
+        avatarUrl:      data?.avatar_url         ?? "",
       });
       setLoading(false);
     };
@@ -86,6 +90,57 @@ export default function ProfileInformationPage() {
 
   const clearFirstName  = () => setFormData({ ...formData, firstName: "" });
   const clearSecondName = () => setFormData({ ...formData, secondName: "" });
+
+  //  Subir/reemplazar la foto de perfil (Supabase Storage, bucket "avatares") 
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !userId) return;
+
+    setAvatarError("");
+    if (!file.type.startsWith("image/")) {
+      setAvatarError("Sube solo archivos de imagen (JPG o PNG).");
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      setAvatarError("La imagen no debe pesar más de 3MB.");
+      return;
+    }
+
+    setUploadingAvatar(true);
+    try {
+      const ext = file.name.split(".").pop();
+      const fileName = `${userId}-${Date.now()}.${ext}`;
+
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from("avatares")
+        .upload(fileName, file, { cacheControl: "3600", upsert: false });
+
+      if (uploadError || !uploadData) {
+        setAvatarError("No se pudo subir la imagen. Intenta de nuevo.");
+        return;
+      }
+
+      const { data: urlData } = supabase.storage.from("avatares").getPublicUrl(uploadData.path);
+      const publicUrl = urlData.publicUrl;
+
+      const { error: dbError } = await supabase
+        .from("perfiles")
+        .update({ avatar_url: publicUrl })
+        .eq("id", userId);
+
+      if (dbError) {
+        setAvatarError("La imagen se subió, pero no se pudo guardar en tu perfil.");
+        return;
+      }
+
+      setFormData(prev => ({ ...prev, avatarUrl: publicUrl }));
+      // Recargamos para que el avatar se actualice también en el sidebar
+      // de /website/profile y en la navbar del sitio público.
+      window.location.reload();
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
 
   //  Guardar cambios en Supabase 
   const handleSave = async () => {
@@ -207,18 +262,42 @@ export default function ProfileInformationPage() {
            <label className="block text-sm font-bold text-slate-700 mb-4">Foto de perfil</label>
            
            <div className="relative group">
-              <div className="w-48 h-48 rounded-full overflow-hidden shadow-xl border border-slate-100 relative">
-                 <img src="https://i.pravatar.cc/300?img=11" alt="Profile Large" className="w-full h-full object-cover" />
-                 
-                 <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
-                    <Camera size={32} className="text-white" />
+              <label htmlFor="avatar-upload-input" className="w-48 h-48 rounded-full overflow-hidden shadow-xl border border-slate-100 relative block cursor-pointer bg-slate-100">
+                 {formData.avatarUrl ? (
+                   <img src={formData.avatarUrl} alt="Profile Large" className="w-full h-full object-cover" />
+                 ) : (
+                   <div className="w-full h-full flex items-center justify-center bg-slate-200">
+                     <svg viewBox="0 0 24 24" fill="currentColor" className="w-20 h-20 text-slate-400">
+                       <circle cx="12" cy="8" r="4" />
+                       <path d="M4 20c0-4.418 3.582-7 8-7s8 2.582 8 7v1H4v-1z" />
+                     </svg>
+                   </div>
+                 )}
+
+                 <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    {uploadingAvatar ? (
+                      <Loader2 size={32} className="text-white animate-spin" />
+                    ) : (
+                      <Camera size={32} className="text-white" />
+                    )}
                  </div>
-              </div>
+              </label>
+              <input
+                id="avatar-upload-input"
+                type="file"
+                accept="image/png,image/jpeg,image/jpg"
+                className="hidden"
+                disabled={uploadingAvatar}
+                onChange={handleAvatarChange}
+              />
            </div>
            
            <p className="text-xs text-slate-400 font-medium mt-6 text-left max-w-[200px]">
              Te recomendamos usar una imagen cuadrada en formato JPG o PNG.
            </p>
+           {avatarError && (
+             <p className="text-xs text-red-500 font-bold mt-2 text-left max-w-[200px]">{avatarError}</p>
+           )}
         </div>
 
       </div>
